@@ -107,6 +107,14 @@ diesel::table! {
 }
 
 diesel::table! {
+    feature_flags (protocol_version, flag_name) {
+        protocol_version -> Int8,
+        flag_name -> Text,
+        flag_value -> Bool,
+    }
+}
+
+diesel::table! {
     objects (object_id) {
         object_id -> Bytea,
         object_version -> Int8,
@@ -205,6 +213,14 @@ diesel::table! {
 }
 
 diesel::table! {
+    protocol_configs (protocol_version, config_name) {
+        protocol_version -> Int8,
+        config_name -> Text,
+        config_value -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
     transactions (tx_sequence_number, checkpoint_sequence_number) {
         tx_sequence_number -> Int8,
         transaction_digest -> Bytea,
@@ -296,10 +312,10 @@ macro_rules! for_all_tables {
             display,
             epochs,
             events,
-            objects,
+            feature_flags,
             objects_history,
             objects_snapshot,
-            packages,
+            protocol_configs,
             transactions,
             tx_calls,
             tx_changed_objects,
