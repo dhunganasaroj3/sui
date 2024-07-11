@@ -10,13 +10,11 @@ use super::{
     address::Address, base64::Base64, date_time::DateTime, move_module::MoveModule,
     move_value::MoveValue, sui_address::SuiAddress,
 };
-use crate::consistency::Checkpointed;
 use crate::data::{self, QueryExecutor};
 use crate::{data::Db, error::Error};
 use async_graphql::connection::{Connection, CursorType, Edge};
 use async_graphql::*;
-use diesel::{BoolExpressionMethods, ExpressionMethods, NullableExpressionMethods, QueryDsl};
-use serde::{Deserialize, Serialize};
+use diesel::{ExpressionMethods, NullableExpressionMethods, QueryDsl};
 use sui_indexer::models::{events::StoredEvent, transactions::StoredTransaction};
 use sui_indexer::schema::{events, transactions, tx_senders};
 use sui_types::base_types::ObjectID;
@@ -24,6 +22,10 @@ use sui_types::Identifier;
 use sui_types::{
     base_types::SuiAddress as NativeSuiAddress, event::Event as NativeEvent, parse_sui_struct_tag,
 };
+
+pub(crate) use ev_cursor::Cursor;
+
+mod ev_cursor;
 
 /// A Sui node emits one of the following events:
 /// Move event
@@ -40,21 +42,6 @@ pub(crate) struct Event {
     pub checkpoint_viewed_at: u64,
 }
 
-/// Contents of an Event's cursor.
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub(crate) struct EventKey {
-    /// Transaction Sequence Number
-    tx: u64,
-
-    /// Event Sequence Number
-    e: u64,
-
-    /// The checkpoint sequence number this was viewed at.
-    #[serde(rename = "c")]
-    checkpoint_viewed_at: u64,
-}
-
-pub(crate) type Cursor = cursor::JsonCursor<EventKey>;
 type Query<ST, GB> = data::Query<ST, events::table, GB>;
 
 #[derive(InputObject, Clone, Default)]
@@ -159,6 +146,111 @@ impl Event {
         let cursor_viewed_at = page.validate_cursor_consistency()?;
         let checkpoint_viewed_at = cursor_viewed_at.unwrap_or(checkpoint_viewed_at);
 
+        let mut ctes = vec![];
+
+        if let Some(digest) = &filter.transaction_digest {
+            ctes.push(format!(
+                r#"
+                tx_eq AS (
+                    SELECT tx_sequence_number AS eq
+                    FROM tx_digests
+                    WHERE digest = {}
+                )
+            "#,
+                bytea_literal(digest)
+            ));
+        }
+        if let Some(after) = page.after() {
+            ctes.push(format!(
+                r#"
+                tx_lo AS (
+                    SELECT GREATEST({}, (SELECT eq FROM tx_eq)) AS lo
+                ),
+                ev_lo AS (
+                    SELECT CASE
+                        WHEN (SELECT lo FROM tx_lo) > {} THEN {} ELSE {}
+                    END AS lo
+                )
+            "#,
+                after.tx, after.tx, 0, after.e,
+            ));
+        }
+
+        /**
+                         * if page.after {
+                         * tx_lo AS (SELECT GREATEST(?, (SELECT eq from tx_eq)) AS lo)
+                         * ev_lo AS (SELECT CASE
+                         *  WHEN (SELECT lo FROM tx_lo) > ? THEN ? ELSE ?
+                         * END as lo)
+                         * }
+                         *
+                         * if page.before {
+                         * tx_hi AS (
+                    SELECT LEAST(?, (SELECT eq FROM tx_eq)) AS hi
+                ),
+
+                ev_hi AS (
+                    SELECT CASE
+                        WHEN (SELECT hi FROM tx_hi) < ? THEN ?
+                        ELSE ?
+                    END AS hi
+                ) }
+                         *
+                         *
+                        sdlfkjsdflkjlfkjsldfkjsdlfkkkk*
+                         *
+                         * WITH tx_eq AS (
+            SELECT tx_sequence_number AS eq
+            FROM amnn_0_hybrid_tx_digests
+            WHERE tx_digest = ?
+        ),
+        tx_hi AS (
+            SELECT LEAST(?, (SELECT eq FROM tx_eq)) AS hi
+        ),
+        ev_hi AS (
+            SELECT CASE
+                WHEN (SELECT hi FROM tx_hi) < ? THEN ?
+                ELSE ?
+            END AS hi
+        )
+        SELECT tx_sequence_number, event_sequence_number
+        FROM amnn_0_hybrid_ev_event_mod
+        WHERE ((package = ?) AND (module = ?))
+            AND (sender = ?)
+            AND (tx_sequence_number >= (SELECT lo FROM tx_lo))
+            AND (tx_sequence_number <= (SELECT hi FROM tx_hi))
+            AND (ROW(tx_sequence_number, event_sequence_number) >= ((SELECT lo FROM tx_lo), (SELECT lo FROM ev_lo)))
+            AND (ROW(tx_sequence_number, event_sequence_number) <= ((SELECT hi FROM tx_hi), (SELECT hi FROM ev_hi)))
+        ORDER BY tx_sequence_number ASC, event_sequence_number ASC
+        LIMIT ?
+                         */
+        // ok so we have
+        // sender
+        // digest
+        // emitting
+        // event
+
+        // combinations with sender and digest are fine
+        // basically can't combine emitting and event
+
+        // if we make two roundtrips then we can continue using query dsl
+        // otherwise we'll have to follow a similar format to what we did to tx...
+
+        // apply, redundantly, tlo and thi
+
+        // emitting -> event_emit_package, event_emit_module
+        // event_type -> event_struct_package, _module, _name, _instantiation?
+
+        // em-pkg (conj [:= :package (hex->bytes em-pkg)])
+        // em-mod (conj [:= :module  em-mod])
+
+        // ev-pkg (conj [:= :event-type-package (hex->bytes ev-pkg)])
+        // ev-mod (conj [:= :event-type-module  ev-mod])
+        // ev-typ (conj [:= :event-type-name (first (s/split ev-typ #"<" 2))])
+
+        // (and ev-typ (s/includes? ev-typ "<"))
+        // (conj [:= :event-type (str (hex/normalize ev-pkg)
+        //    "::" ev-mod "::" ev-typ)])
         let (prev, next, results) = db
             .execute(move |conn| {
                 page.paginate_query::<StoredEvent, _, _, _>(conn, checkpoint_viewed_at, move || {
@@ -325,60 +417,5 @@ impl Event {
             },
             checkpoint_viewed_at,
         })
-    }
-}
-
-impl Paginated<Cursor> for StoredEvent {
-    type Source = events::table;
-
-    fn filter_ge<ST, GB>(cursor: &Cursor, query: Query<ST, GB>) -> Query<ST, GB> {
-        use events::dsl::{event_sequence_number as event, tx_sequence_number as tx};
-        query.filter(
-            tx.gt(cursor.tx as i64)
-                .or(tx.eq(cursor.tx as i64).and(event.ge(cursor.e as i64))),
-        )
-    }
-
-    fn filter_le<ST, GB>(cursor: &Cursor, query: Query<ST, GB>) -> Query<ST, GB> {
-        use events::dsl::{event_sequence_number as event, tx_sequence_number as tx};
-        query.filter(
-            tx.lt(cursor.tx as i64)
-                .or(tx.eq(cursor.tx as i64).and(event.le(cursor.e as i64))),
-        )
-    }
-
-    fn order<ST, GB>(asc: bool, query: Query<ST, GB>) -> Query<ST, GB> {
-        use events::dsl;
-        if asc {
-            query
-                .order_by(dsl::tx_sequence_number.asc())
-                .then_order_by(dsl::event_sequence_number.asc())
-        } else {
-            query
-                .order_by(dsl::tx_sequence_number.desc())
-                .then_order_by(dsl::event_sequence_number.desc())
-        }
-    }
-}
-
-impl Target<Cursor> for StoredEvent {
-    fn cursor(&self, checkpoint_viewed_at: u64) -> Cursor {
-        Cursor::new(EventKey {
-            tx: self.tx_sequence_number as u64,
-            e: self.event_sequence_number as u64,
-            checkpoint_viewed_at,
-        })
-    }
-}
-
-impl Checkpointed for Cursor {
-    fn checkpoint_viewed_at(&self) -> u64 {
-        self.checkpoint_viewed_at
-    }
-}
-
-impl ScanLimited for Cursor {
-    fn is_scan_limited(&self) -> bool {
-        false
     }
 }

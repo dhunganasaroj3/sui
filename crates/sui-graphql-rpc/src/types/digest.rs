@@ -78,6 +78,18 @@ impl fmt::Display for Digest {
     }
 }
 
+pub(crate) fn bytea_literal(digest: &Digest) -> impl fmt::Display + '_ {
+    struct ByteaLiteral<'a>(&'a [u8]);
+
+    impl fmt::Display for ByteaLiteral<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "'\\x{}'::bytea", hex::encode(self.0))
+        }
+    }
+
+    ByteaLiteral(digest.as_slice())
+}
+
 #[cfg(test)]
 mod tests {
     use super::Error;

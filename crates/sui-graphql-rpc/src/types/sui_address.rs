@@ -1,11 +1,11 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::str::FromStr;
-
 use async_graphql::*;
 use move_core_types::account_address::AccountAddress;
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::str::FromStr;
 use sui_types::base_types::{ObjectID, SuiAddress as NativeSuiAddress};
 use thiserror::Error;
 
@@ -159,6 +159,18 @@ impl std::fmt::Display for SuiAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&format!("0x{}", hex::encode(self.0)))
     }
+}
+
+pub(crate) fn bytea_literal(addr: &SuiAddress) -> impl fmt::Display + '_ {
+    struct ByteaLiteral<'a>(&'a [u8]);
+
+    impl fmt::Display for ByteaLiteral<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "'\\x{}'::bytea", hex::encode(self.0))
+        }
+    }
+
+    ByteaLiteral(addr.as_slice())
 }
 
 #[cfg(test)]
