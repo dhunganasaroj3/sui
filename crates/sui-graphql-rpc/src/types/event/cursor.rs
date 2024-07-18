@@ -3,7 +3,7 @@
 
 use crate::{
     consistency::Checkpointed,
-    types::cursor::{self, Paginated, Target},
+    types::cursor::{self, Paginated, ScanLimited, Target},
 };
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl};
 use serde::{Deserialize, Serialize};
