@@ -8,7 +8,7 @@ use crate::{
     types::{
         cursor::Page,
         digest::Digest,
-        sui_address::{bytea_literal, SuiAddress},
+        sui_address::SuiAddress,
         transaction_block::TransactionBlockKindInput,
         type_filter::{FqNameFilter, ModuleFilter},
     },

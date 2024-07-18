@@ -3,15 +3,17 @@
 
 use std::str::FromStr;
 
-use super::cursor::{self, Page, Paginated, ScanLimited, Target};
+use super::cursor::{Page, Target};
 use super::digest::Digest;
 use super::type_filter::{ModuleFilter, TypeFilter};
 use super::{
     address::Address, base64::Base64, date_time::DateTime, move_module::MoveModule,
     move_value::MoveValue, sui_address::SuiAddress,
 };
+use crate::data::pg::bytea_literal;
 use crate::data::{self, QueryExecutor};
 use crate::{data::Db, error::Error};
+use crate::{filter, query};
 use async_graphql::connection::{Connection, CursorType, Edge};
 use async_graphql::*;
 use diesel::{ExpressionMethods, NullableExpressionMethods, QueryDsl};
@@ -23,9 +25,8 @@ use sui_types::{
     base_types::SuiAddress as NativeSuiAddress, event::Event as NativeEvent, parse_sui_struct_tag,
 };
 
-pub(crate) use ev_cursor::Cursor;
-
-mod ev_cursor;
+mod cursor;
+pub(crate) use cursor::Cursor;
 
 /// A Sui node emits one of the following events:
 /// Move event
@@ -157,7 +158,7 @@ impl Event {
                     WHERE digest = {}
                 )
             "#,
-                bytea_literal(digest)
+                bytea_literal(digest.as_slice())
             ));
         }
         if let Some(after) = page.after() {
@@ -175,82 +176,149 @@ impl Event {
                 after.tx, after.tx, 0, after.e,
             ));
         }
-
-        /**
-                         * if page.after {
-                         * tx_lo AS (SELECT GREATEST(?, (SELECT eq from tx_eq)) AS lo)
-                         * ev_lo AS (SELECT CASE
-                         *  WHEN (SELECT lo FROM tx_lo) > ? THEN ? ELSE ?
-                         * END as lo)
-                         * }
-                         *
-                         * if page.before {
-                         * tx_hi AS (
-                    SELECT LEAST(?, (SELECT eq FROM tx_eq)) AS hi
+        if let Some(before) = page.before() {
+            ctes.push(format!(
+                r#"
+                tx_hi AS (
+                    SELECT LEAST({}, (SELECT eq FROM tx_eq)) AS hi
                 ),
-
                 ev_hi AS (
                     SELECT CASE
-                        WHEN (SELECT hi FROM tx_hi) < ? THEN ?
-                        ELSE ?
+                        WHEN (SELECT hi FROM tx_hi) < {} THEN {} ELSE {}
                     END AS hi
-                ) }
-                         *
-                         *
-                        sdlfkjsdflkjlfkjsldfkjsdlfkkkk*
-                         *
-                         * WITH tx_eq AS (
-            SELECT tx_sequence_number AS eq
-            FROM amnn_0_hybrid_tx_digests
-            WHERE tx_digest = ?
-        ),
-        tx_hi AS (
-            SELECT LEAST(?, (SELECT eq FROM tx_eq)) AS hi
-        ),
-        ev_hi AS (
-            SELECT CASE
-                WHEN (SELECT hi FROM tx_hi) < ? THEN ?
-                ELSE ?
-            END AS hi
-        )
-        SELECT tx_sequence_number, event_sequence_number
-        FROM amnn_0_hybrid_ev_event_mod
-        WHERE ((package = ?) AND (module = ?))
-            AND (sender = ?)
-            AND (tx_sequence_number >= (SELECT lo FROM tx_lo))
-            AND (tx_sequence_number <= (SELECT hi FROM tx_hi))
-            AND (ROW(tx_sequence_number, event_sequence_number) >= ((SELECT lo FROM tx_lo), (SELECT lo FROM ev_lo)))
-            AND (ROW(tx_sequence_number, event_sequence_number) <= ((SELECT hi FROM tx_hi), (SELECT hi FROM ev_hi)))
-        ORDER BY tx_sequence_number ASC, event_sequence_number ASC
-        LIMIT ?
-                         */
-        // ok so we have
-        // sender
-        // digest
-        // emitting
-        // event
+                )
+            "#,
+                before.tx, before.tx, 0, before.e,
+            ));
+        }
 
-        // combinations with sender and digest are fine
-        // basically can't combine emitting and event
+        let mut query = match (&filter.sender, &filter.emitting_module, &filter.event_type) {
+            (None, None, None) => {
+                query!("SELECT * FROM events")
+            }
+            (Some(sender), None, None) => {
+                filter!(
+                    query!("SELECT tx_sequence_number, event_sequence_number FROM event_senders"),
+                    format!("sender = {}", bytea_literal(sender.as_slice()))
+                )
+            }
+            (sender, None, Some(event_type)) => {
+                let query = match event_type {
+                    TypeFilter::ByModule(ModuleFilter::ByPackage(p)) => {
+                        filter!(
+                            query!(
+                            "SELECT tx_sequence_number, event_sequence_number FROM event_struct_package"
+                        ),
+                            format!("package = {}", bytea_literal(p.as_slice()))
+                        )
+                    }
+                    TypeFilter::ByModule(ModuleFilter::ByModule(p, m)) => {
+                        filter!(
+                            query!(
+                                "SELECT tx_sequence_number, event_sequence_number FROM event_struct_module"
+                            ),
+                            format!(
+                                "package = {} and module = {{}}",
+                                bytea_literal(p.as_slice())
+                            ),
+                            m
+                        )
+                    }
+                    TypeFilter::ByType(tag) => {
+                        let p = tag.address.to_vec();
+                        let m = tag.module.to_string();
+                        let exact = tag.to_canonical_string(/* with_prefix */ true);
+                        let t = exact.split("::").nth(2).unwrap();
 
-        // if we make two roundtrips then we can continue using query dsl
-        // otherwise we'll have to follow a similar format to what we did to tx...
+                        let (table, col_name) = if tag.type_params.is_empty() {
+                            ("event_struct_name", "type_name")
+                        } else {
+                            ("event_struct_name_instantiation", "type_instantiation")
+                        };
 
-        // apply, redundantly, tlo and thi
+                        filter!(
+                            query!(format!(
+                                "SELECT tx_sequence_number, event_sequence_number FROM {}",
+                                table
+                            )),
+                            format!(
+                                "package = {} and module = {{}} and {} = {{}}",
+                                bytea_literal(p.as_slice()),
+                                col_name
+                            ),
+                            m,
+                            t
+                        )
+                    }
+                };
 
-        // emitting -> event_emit_package, event_emit_module
-        // event_type -> event_struct_package, _module, _name, _instantiation?
+                if let Some(sender) = sender {
+                    filter!(
+                        query,
+                        format!("sender = {}", bytea_literal(sender.as_slice()))
+                    )
+                } else {
+                    query
+                }
+            }
 
-        // em-pkg (conj [:= :package (hex->bytes em-pkg)])
-        // em-mod (conj [:= :module  em-mod])
+            (sender, Some(module), None) => {
+                let query = {
+                    match module {
+                        ModuleFilter::ByPackage(p) => {
+                            filter!(
+                                query!(
+                                "SELECT tx_sequence_number, event_sequence_number FROM event_emit_package"
+                            ),
+                                format!("package = {}", bytea_literal(p.as_slice()))
+                            )
+                        }
+                        ModuleFilter::ByModule(p, m) => {
+                            filter!(
+                                query!(
+                                    "SELECT tx_sequence_number, event_sequence_number FROM event_emit_module"
+                                ),
+                                format!(
+                                    "package = {} and module = {{}}",
+                                    bytea_literal(p.as_slice())
+                                ),
+                                m
+                            )
+                        }
+                    }
+                };
 
-        // ev-pkg (conj [:= :event-type-package (hex->bytes ev-pkg)])
-        // ev-mod (conj [:= :event-type-module  ev-mod])
-        // ev-typ (conj [:= :event-type-name (first (s/split ev-typ #"<" 2))])
+                if let Some(sender) = sender {
+                    filter!(
+                        query,
+                        format!("sender = {}", bytea_literal(sender.as_slice()))
+                    )
+                } else {
+                    query
+                }
+            }
+            (_, Some(_), Some(_)) => {
+                return Err(Error::Internal(
+                    "Filtering by both emitting module and event type is not supported".to_string(),
+                ))
+            }
+        };
 
-        // (and ev-typ (s/includes? ev-typ "<"))
-        // (conj [:= :event-type (str (hex/normalize ev-pkg)
-        //    "::" ev-mod "::" ev-typ)])
+        query = query
+            .filter("(SELECT lo FROM tx_lo) <= tx_sequence_number")
+            .filter("tx_sequence_number <= (SELECT hi FROM tx_hi)")
+            .filter(
+                "(ROW(tx_sequence_number, event_sequence_number) >= \
+             ((SELECT lo FROM tx_lo), (SELECT lo FROM ev_lo)))",
+            )
+            .filter(
+                "(ROW(tx_sequence_number, event_sequence_number) <= \
+             ((SELECT hi FROM tx_hi), (SELECT hi FROM ev_hi)))",
+            );
+        // apply order by and limit lastly
+
+        // hmmm... depending on how we need to handle checkpoint_viewed_at, we may need to make a fetch for its corresponding tx
+        // in which case we might as well tack on some other things to fetch
         let (prev, next, results) = db
             .execute(move |conn| {
                 page.paginate_query::<StoredEvent, _, _, _>(conn, checkpoint_viewed_at, move || {
