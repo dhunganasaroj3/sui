@@ -18,8 +18,9 @@ use crate::{filter, query};
 use async_graphql::connection::{Connection, CursorType, Edge};
 use async_graphql::*;
 use cursor::EvLookup;
+use diesel::{ExpressionMethods, QueryDsl};
 use sui_indexer::models::{events::StoredEvent, transactions::StoredTransaction};
-use sui_indexer::schema::events;
+use sui_indexer::schema::{checkpoints, events};
 use sui_types::base_types::ObjectID;
 use sui_types::Identifier;
 use sui_types::{
@@ -259,8 +260,6 @@ impl Event {
             }
         };
 
-        query = add_ctes(query, &filter, &page);
-
         query = query
             .filter("(SELECT lo FROM tx_lo) <= tx_sequence_number")
             .filter("tx_sequence_number <= (SELECT hi FROM tx_hi)")
@@ -280,11 +279,20 @@ impl Event {
             query = filter!(query, "EXISTS (SELECT 1 FROM tx_eq)");
         }
 
+        use checkpoints::dsl;
+
         // hmmm... depending on how we need to handle checkpoint_viewed_at, we may need to make a fetch for its corresponding tx
         // in which case we might as well tack on some other things to fetch
         let (prev, next, results) = db
             .execute(move |conn| {
                 // todo handle `checkpoint_viewed_at`
+
+                let tx_hi: i64 = conn.first(move || {
+                    dsl::checkpoints.select(dsl::network_total_transactions)
+                        .filter(dsl::sequence_number.eq(checkpoint_viewed_at as i64))
+                })?;
+
+                query = add_ctes(query, &filter, &page, (tx_hi - 1) as u64);
 
                 let (prev, next, results) =
                     page.paginate_raw_query::<EvLookup>(conn, checkpoint_viewed_at, query)?;
@@ -315,8 +323,8 @@ impl Event {
                     query!(query_string).into_boxed()
                 })?;
 
-                // UNION ALL does not guarantee order, so we need to sort the results. For now, we
-                // always sort in ascending order.
+                // UNION ALL does not guarantee order, so we need to sort the results. Whether
+                // `first` or `last, the result set is always sorted in ascending order.
                 events.sort_by(|a, b| {
                         a.tx_sequence_number.cmp(&b.tx_sequence_number)
                             .then_with(|| a.event_sequence_number.cmp(&b.event_sequence_number))
@@ -435,7 +443,12 @@ impl Event {
     }
 }
 
-pub(crate) fn add_ctes(mut query: RawQuery, filter: &EventFilter, page: &Page<Cursor>) -> RawQuery {
+fn add_ctes(
+    mut query: RawQuery,
+    filter: &EventFilter,
+    page: &Page<Cursor>,
+    tx_hi: u64,
+) -> RawQuery {
     let mut ctes = vec![];
 
     if let Some(digest) = filter.transaction_digest {
@@ -453,7 +466,7 @@ pub(crate) fn add_ctes(mut query: RawQuery, filter: &EventFilter, page: &Page<Cu
 
     let (after_tx, after_ev) = page.after().map(|x| (x.tx, x.e)).unwrap_or((0, 0));
 
-    let tx_lo = if !ctes.is_empty() {
+    let select_lo = if !ctes.is_empty() {
         format!("SELECT GREATEST({}, (SELECT eq FROM tx_eq))", after_tx)
     } else {
         format!("SELECT {}", after_tx)
@@ -468,15 +481,17 @@ pub(crate) fn add_ctes(mut query: RawQuery, filter: &EventFilter, page: &Page<Cu
             END AS lo
         )
     "#,
-        tx_lo, after_tx, 0, after_ev
+        select_lo, after_tx, 0, after_ev
     ));
 
+    // todo: if before_tx is None then we should have another cte to lookup the
+    // network_total_transactions for the checkpoint_viewed_at, and use that
     let (before_tx, before_ev) = page
         .before()
         .map(|x| (x.tx, x.e))
-        .unwrap_or((u64::MAX, u64::MAX));
+        .unwrap_or((tx_hi, u64::MAX));
 
-    let tx_hi = if ctes.len() == 2 {
+    let select_hi = if ctes.len() == 2 {
         format!("SELECT LEAST({}, (SELECT eq FROM tx_eq))", before_tx)
     } else {
         format!("SELECT {}", before_tx)
@@ -491,7 +506,7 @@ pub(crate) fn add_ctes(mut query: RawQuery, filter: &EventFilter, page: &Page<Cu
             END AS hi
         )
     "#,
-        tx_hi,
+        select_hi,
         before_tx,
         u64::MAX,
         before_ev

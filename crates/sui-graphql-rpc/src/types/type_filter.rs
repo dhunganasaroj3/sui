@@ -3,16 +3,12 @@
 
 use super::{string_input::impl_string_input, sui_address::SuiAddress};
 use crate::raw_query::RawQuery;
-use crate::{
-    data::{DieselBackend, Query},
-    filter,
-};
+use crate::{data::DieselBackend, filter};
 use async_graphql::*;
 use diesel::{
     expression::{is_aggregate::No, ValidGrouping},
     query_builder::QueryFragment,
-    sql_types::{Binary, Text},
-    AppearsOnTable, Expression, ExpressionMethods, QueryDsl, QuerySource,
+    AppearsOnTable, Expression, ExpressionMethods, QuerySource,
 };
 use move_core_types::language_storage::StructTag;
 use std::{fmt, result::Result, str::FromStr};
