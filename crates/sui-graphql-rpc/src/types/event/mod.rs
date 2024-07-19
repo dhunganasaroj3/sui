@@ -286,7 +286,6 @@ impl Event {
             .execute(move |conn| {
                 // todo handle `checkpoint_viewed_at`
 
-                // then do a multi-get for the event contents
                 let (prev, next, results) =
                     page.paginate_raw_query::<EvLookup>(conn, checkpoint_viewed_at, query)?;
 
@@ -316,7 +315,8 @@ impl Event {
                     query!(query_string).into_boxed()
                 })?;
 
-                // UNION ALL does not guarantee order, so we need to sort the results
+                // UNION ALL does not guarantee order, so we need to sort the results. For now, we
+                // always sort in ascending order.
                 events.sort_by(|a, b| {
                         a.tx_sequence_number.cmp(&b.tx_sequence_number)
                             .then_with(|| a.event_sequence_number.cmp(&b.event_sequence_number))
@@ -433,14 +433,6 @@ impl Event {
             checkpoint_viewed_at,
         })
     }
-}
-
-pub(crate) fn build_events_query() {
-    // construct ctes
-
-    // WITH {cte} {select}
-
-    // add filters as needed
 }
 
 pub(crate) fn add_ctes(mut query: RawQuery, filter: &EventFilter, page: &Page<Cursor>) -> RawQuery {
