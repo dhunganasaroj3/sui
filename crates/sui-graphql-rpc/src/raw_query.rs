@@ -24,6 +24,7 @@ pub(crate) type RawSqlQuery = BoxedSqlQuery<'static, DieselBackend, SqlQuery>;
 /// increases exposure to SQL injection attacks.
 #[derive(Clone)]
 pub(crate) struct RawQuery {
+    cte: Option<String>,
     /// The `SELECT` and `FROM` clauses of the query.
     select: String,
     /// The `WHERE` clause of the query.
@@ -42,6 +43,7 @@ impl RawQuery {
     /// Constructs a new `RawQuery` with the given `SELECT` clause and binds.
     pub(crate) fn new(select: impl Into<String>, binds: Vec<String>) -> Self {
         Self {
+            cte: None,
             select: select.into(),
             where_: None,
             order_by: Vec::new(),
@@ -67,6 +69,16 @@ impl RawQuery {
         self.where_ = match self.where_ {
             Some(where_) => Some(format!("({}) OR {}", where_, condition)),
             None => Some(condition.to_string()),
+        };
+
+        self
+    }
+
+    // Adds a `WITH` clause to the query.
+    pub(crate) fn with<T: ToString>(mut self, ctes: T) -> Self {
+        self.cte = match self.cte {
+            Some(cte) => Some(format!("{}, {}", cte, ctes.to_string())),
+            None => Some(ctes.to_string()),
         };
 
         self
@@ -100,6 +112,10 @@ impl RawQuery {
     /// `query!` macro.
     pub(crate) fn finish(self) -> (String, Vec<String>) {
         let mut select = self.select;
+
+        if let Some(cte) = self.cte {
+            select = format!("WITH {} {}", cte, select);
+        }
 
         if let Some(where_) = self.where_ {
             select.push_str(" WHERE ");

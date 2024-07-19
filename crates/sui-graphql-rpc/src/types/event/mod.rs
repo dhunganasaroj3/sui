@@ -12,16 +12,14 @@ use super::{
 };
 use crate::data::pg::bytea_literal;
 use crate::data::{self, DbConnection, QueryExecutor};
+use crate::raw_query::RawQuery;
 use crate::{data::Db, error::Error};
 use crate::{filter, query};
 use async_graphql::connection::{Connection, CursorType, Edge};
 use async_graphql::*;
 use cursor::EvLookup;
-use diesel::{
-    BoolExpressionMethods, CombineDsl, ExpressionMethods, NullableExpressionMethods, QueryDsl,
-};
 use sui_indexer::models::{events::StoredEvent, transactions::StoredTransaction};
-use sui_indexer::schema::{events, transactions, tx_senders};
+use sui_indexer::schema::events;
 use sui_types::base_types::ObjectID;
 use sui_types::Identifier;
 use sui_types::{
@@ -150,76 +148,13 @@ impl Event {
         let cursor_viewed_at = page.validate_cursor_consistency()?;
         let checkpoint_viewed_at = cursor_viewed_at.unwrap_or(checkpoint_viewed_at);
 
-        let mut ctes = vec![];
-
-        if let Some(digest) = filter.transaction_digest {
-            ctes.push(format!(
-                r#"
-                tx_eq AS (
-                    SELECT tx_sequence_number AS eq
-                    FROM tx_digests
-                    WHERE tx_digest = {}
-                )
-            "#,
-                bytea_literal(digest.as_slice())
-            ));
-        }
-
-        let (after_tx, after_ev) = page.after().map(|x| (x.tx, x.e)).unwrap_or((0, 0));
-
-        let tx_lo = if !ctes.is_empty() {
-            format!("SELECT GREATEST({}, (SELECT eq FROM tx_eq))", after_tx)
-        } else {
-            format!("SELECT {}", after_tx)
-        };
-
-        ctes.push(format!(
-            r#"
-            tx_lo AS ({} AS lo),
-            ev_lo AS (
-                SELECT CASE
-                    WHEN (SELECT lo FROM tx_lo) > {} THEN {} ELSE {}
-                END AS lo
-            )
-        "#,
-            tx_lo, after_tx, 0, after_ev
-        ));
-
-        let (before_tx, before_ev) = page
-            .before()
-            .map(|x| (x.tx, x.e))
-            .unwrap_or((u64::MAX, u64::MAX));
-
-        let tx_hi = if ctes.len() == 2 {
-            format!("SELECT LEAST({}, (SELECT eq FROM tx_eq))", before_tx)
-        } else {
-            format!("SELECT {}", before_tx)
-        };
-
-        ctes.push(format!(
-            r#"
-            tx_hi AS ({} AS hi),
-            ev_hi AS (
-                SELECT CASE
-                    WHEN (SELECT hi FROM tx_hi) < {} THEN {} ELSE {}
-                END AS hi
-            )
-        "#,
-            tx_hi,
-            before_tx,
-            u64::MAX,
-            before_ev
-        ));
-
-        let ctes = query!(ctes.join(","));
-
         let mut query = match (&filter.sender, &filter.emitting_module, &filter.event_type) {
             (None, None, None) => {
-                query!("WITH {} SELECT * FROM events", ctes)
+                query!("SELECT * FROM events")
             }
             (Some(sender), None, None) => {
                 filter!(
-                    query!("WITH {} SELECT tx_sequence_number, event_sequence_number FROM event_senders", ctes),
+                    query!("SELECT tx_sequence_number, event_sequence_number FROM event_senders"),
                     format!("sender = {}", bytea_literal(sender.as_slice()))
                 )
             }
@@ -228,14 +163,14 @@ impl Event {
                     TypeFilter::ByModule(ModuleFilter::ByPackage(p)) => {
                         filter!(
                             query!(
-                            "WITH {} SELECT tx_sequence_number, event_sequence_number FROM event_struct_package", ctes),
+                            "SELECT tx_sequence_number, event_sequence_number FROM event_struct_package"),
                             format!("package = {}", bytea_literal(p.as_slice()))
                         )
                     }
                     TypeFilter::ByModule(ModuleFilter::ByModule(p, m)) => {
                         filter!(
                             query!(
-                                "WITH {} SELECT tx_sequence_number, event_sequence_number FROM event_struct_module", ctes
+                                "SELECT tx_sequence_number, event_sequence_number FROM event_struct_module"
                             ),
                             format!(
                                 "package = {} and module = {{}}",
@@ -257,14 +192,10 @@ impl Event {
                         };
 
                         filter!(
-                            query!(
-                                "WITH {} {}",
-                                ctes,
-                                query!(format!(
-                                    "SELECT tx_sequence_number, event_sequence_number FROM {}",
-                                    table
-                                ))
-                            ),
+                            query!(format!(
+                                "SELECT tx_sequence_number, event_sequence_number FROM {}",
+                                table
+                            )),
                             format!(
                                 "package = {} and module = {{}} and {} = {{}}",
                                 bytea_literal(p.as_slice()),
@@ -292,7 +223,7 @@ impl Event {
                         ModuleFilter::ByPackage(p) => {
                             filter!(
                                 query!(
-                                "WITH {} SELECT tx_sequence_number, event_sequence_number FROM event_emit_package", ctes
+                                "SELECT tx_sequence_number, event_sequence_number FROM event_emit_package"
                             ),
                                 format!("package = {}", bytea_literal(p.as_slice()))
                             )
@@ -300,7 +231,7 @@ impl Event {
                         ModuleFilter::ByModule(p, m) => {
                             filter!(
                                 query!(
-                                    "WITH {} SELECT tx_sequence_number, event_sequence_number FROM event_emit_module", ctes
+                                    "SELECT tx_sequence_number, event_sequence_number FROM event_emit_module"
                                 ),
                                 format!(
                                     "package = {} and module = {{}}",
@@ -327,6 +258,8 @@ impl Event {
                 ))
             }
         };
+
+        query = add_ctes(query, &filter, &page);
 
         query = query
             .filter("(SELECT lo FROM tx_lo) <= tx_sequence_number")
@@ -370,7 +303,7 @@ impl Event {
                 // (...)`, because events have a composite primary key, the query planner tends
                 // to perform a sequential scan when given a list of tuples to lookup. A query
                 // using `UNION ALL` allows us to leverage the index on the composite key.
-                let events: Vec<StoredEvent> = conn.results(move || {
+                let mut events: Vec<StoredEvent> = conn.results(move || {
                     // Diesel's DSL does not current support chained `UNION ALL`, so we have to turn
                     // to `RawQuery` here.
                     let query_string = ev_lookups.iter()
@@ -382,6 +315,13 @@ impl Event {
 
                     query!(query_string).into_boxed()
                 })?;
+
+                // UNION ALL does not guarantee order, so we need to sort the results
+                events.sort_by(|a, b| {
+                        a.tx_sequence_number.cmp(&b.tx_sequence_number)
+                            .then_with(|| a.event_sequence_number.cmp(&b.event_sequence_number))
+                });
+
 
                 Ok::<_, diesel::result::Error>((prev, next, events))
             })
@@ -493,4 +433,81 @@ impl Event {
             checkpoint_viewed_at,
         })
     }
+}
+
+pub(crate) fn build_events_query() {
+    // construct ctes
+
+    // WITH {cte} {select}
+
+    // add filters as needed
+}
+
+pub(crate) fn add_ctes(mut query: RawQuery, filter: &EventFilter, page: &Page<Cursor>) -> RawQuery {
+    let mut ctes = vec![];
+
+    if let Some(digest) = filter.transaction_digest {
+        ctes.push(format!(
+            r#"
+            tx_eq AS (
+                SELECT tx_sequence_number AS eq
+                FROM tx_digests
+                WHERE tx_digest = {}
+            )
+        "#,
+            bytea_literal(digest.as_slice())
+        ));
+    }
+
+    let (after_tx, after_ev) = page.after().map(|x| (x.tx, x.e)).unwrap_or((0, 0));
+
+    let tx_lo = if !ctes.is_empty() {
+        format!("SELECT GREATEST({}, (SELECT eq FROM tx_eq))", after_tx)
+    } else {
+        format!("SELECT {}", after_tx)
+    };
+
+    ctes.push(format!(
+        r#"
+        tx_lo AS ({} AS lo),
+        ev_lo AS (
+            SELECT CASE
+                WHEN (SELECT lo FROM tx_lo) > {} THEN {} ELSE {}
+            END AS lo
+        )
+    "#,
+        tx_lo, after_tx, 0, after_ev
+    ));
+
+    let (before_tx, before_ev) = page
+        .before()
+        .map(|x| (x.tx, x.e))
+        .unwrap_or((u64::MAX, u64::MAX));
+
+    let tx_hi = if ctes.len() == 2 {
+        format!("SELECT LEAST({}, (SELECT eq FROM tx_eq))", before_tx)
+    } else {
+        format!("SELECT {}", before_tx)
+    };
+
+    ctes.push(format!(
+        r#"
+        tx_hi AS ({} AS hi),
+        ev_hi AS (
+            SELECT CASE
+                WHEN (SELECT hi FROM tx_hi) < {} THEN {} ELSE {}
+            END AS hi
+        )
+    "#,
+        tx_hi,
+        before_tx,
+        u64::MAX,
+        before_ev
+    ));
+
+    for cte in ctes {
+        query = query.with(cte);
+    }
+
+    query
 }
