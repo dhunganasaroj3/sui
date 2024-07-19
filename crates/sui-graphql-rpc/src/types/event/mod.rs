@@ -4,21 +4,18 @@
 use std::str::FromStr;
 
 use super::cursor::{Page, Target};
-use super::digest::Digest;
-use super::type_filter::{ModuleFilter, TypeFilter};
 use super::{
     address::Address, base64::Base64, date_time::DateTime, move_module::MoveModule,
-    move_value::MoveValue, sui_address::SuiAddress,
+    move_value::MoveValue,
 };
-use crate::data::pg::bytea_literal;
 use crate::data::{self, DbConnection, QueryExecutor};
-use crate::raw_query::RawQuery;
+use crate::query;
 use crate::{data::Db, error::Error};
-use crate::{filter, query};
 use async_graphql::connection::{Connection, CursorType, Edge};
 use async_graphql::*;
 use cursor::EvLookup;
 use diesel::{ExpressionMethods, QueryDsl};
+use lookups::{add_bounds, select_emit_module, select_event_type, select_sender};
 use sui_indexer::models::{events::StoredEvent, transactions::StoredTransaction};
 use sui_indexer::schema::{checkpoints, events};
 use sui_types::base_types::ObjectID;
@@ -28,7 +25,10 @@ use sui_types::{
 };
 
 mod cursor;
+mod filter;
+mod lookups;
 pub(crate) use cursor::Cursor;
+pub(crate) use filter::EventFilter;
 
 /// A Sui node emits one of the following events:
 /// Move event
@@ -46,39 +46,6 @@ pub(crate) struct Event {
 }
 
 type Query<ST, GB> = data::Query<ST, events::table, GB>;
-
-#[derive(InputObject, Clone, Default)]
-pub(crate) struct EventFilter {
-    pub sender: Option<SuiAddress>,
-    pub transaction_digest: Option<Digest>,
-    // Enhancement (post-MVP)
-    // after_checkpoint
-    // before_checkpoint
-    /// Events emitted by a particular module. An event is emitted by a
-    /// particular module if some function in the module is called by a
-    /// PTB and emits an event.
-    ///
-    /// Modules can be filtered by their package, or package::module.
-    pub emitting_module: Option<ModuleFilter>,
-
-    /// This field is used to specify the type of event emitted.
-    ///
-    /// Events can be filtered by their type's package, package::module,
-    /// or their fully qualified type name.
-    ///
-    /// Generic types can be queried by either the generic type name, e.g.
-    /// `0x2::coin::Coin`, or by the full type name, such as
-    /// `0x2::coin::Coin<0x2::sui::SUI>`.
-    pub event_type: Option<TypeFilter>,
-    // Enhancement (post-MVP)
-    // pub start_time
-    // pub end_time
-
-    // Enhancement (post-MVP)
-    // pub any
-    // pub all
-    // pub not
-}
 
 #[Object]
 impl Event {
@@ -149,150 +116,28 @@ impl Event {
         let cursor_viewed_at = page.validate_cursor_consistency()?;
         let checkpoint_viewed_at = cursor_viewed_at.unwrap_or(checkpoint_viewed_at);
 
-        let mut query = match (&filter.sender, &filter.emitting_module, &filter.event_type) {
-            (None, None, None) => {
-                query!("SELECT * FROM events")
-            }
-            (Some(sender), None, None) => {
-                filter!(
-                    query!("SELECT tx_sequence_number, event_sequence_number FROM event_senders"),
-                    format!("sender = {}", bytea_literal(sender.as_slice()))
-                )
-            }
-            (sender, None, Some(event_type)) => {
-                let query = match event_type {
-                    TypeFilter::ByModule(ModuleFilter::ByPackage(p)) => {
-                        filter!(
-                            query!(
-                            "SELECT tx_sequence_number, event_sequence_number FROM event_struct_package"),
-                            format!("package = {}", bytea_literal(p.as_slice()))
-                        )
-                    }
-                    TypeFilter::ByModule(ModuleFilter::ByModule(p, m)) => {
-                        filter!(
-                            query!(
-                                "SELECT tx_sequence_number, event_sequence_number FROM event_struct_module"
-                            ),
-                            format!(
-                                "package = {} and module = {{}}",
-                                bytea_literal(p.as_slice())
-                            ),
-                            m
-                        )
-                    }
-                    TypeFilter::ByType(tag) => {
-                        let p = tag.address.to_vec();
-                        let m = tag.module.to_string();
-                        let exact = tag.to_canonical_string(/* with_prefix */ true);
-                        let t = exact.split("::").nth(2).unwrap();
-
-                        let (table, col_name) = if tag.type_params.is_empty() {
-                            ("event_struct_name", "type_name")
-                        } else {
-                            ("event_struct_name_instantiation", "type_instantiation")
-                        };
-
-                        filter!(
-                            query!(format!(
-                                "SELECT tx_sequence_number, event_sequence_number FROM {}",
-                                table
-                            )),
-                            format!(
-                                "package = {} and module = {{}} and {} = {{}}",
-                                bytea_literal(p.as_slice()),
-                                col_name
-                            ),
-                            m,
-                            t
-                        )
-                    }
-                };
-
-                if let Some(sender) = sender {
-                    filter!(
-                        query,
-                        format!("sender = {}", bytea_literal(sender.as_slice()))
-                    )
-                } else {
-                    query
-                }
-            }
-
-            (sender, Some(module), None) => {
-                let query = {
-                    match module {
-                        ModuleFilter::ByPackage(p) => {
-                            filter!(
-                                query!(
-                                "SELECT tx_sequence_number, event_sequence_number FROM event_emit_package"
-                            ),
-                                format!("package = {}", bytea_literal(p.as_slice()))
-                            )
-                        }
-                        ModuleFilter::ByModule(p, m) => {
-                            filter!(
-                                query!(
-                                    "SELECT tx_sequence_number, event_sequence_number FROM event_emit_module"
-                                ),
-                                format!(
-                                    "package = {} and module = {{}}",
-                                    bytea_literal(p.as_slice())
-                                ),
-                                m
-                            )
-                        }
-                    }
-                };
-
-                if let Some(sender) = sender {
-                    filter!(
-                        query,
-                        format!("sender = {}", bytea_literal(sender.as_slice()))
-                    )
-                } else {
-                    query
-                }
-            }
+        // Initializes query with the select statement and table-relevant filters
+        let mut query = match (filter.sender, &filter.emitting_module, &filter.event_type) {
+            (None, None, None) => query!("SELECT * FROM events"),
+            (Some(sender), None, None) => select_sender(sender),
+            (sender, None, Some(event_type)) => select_event_type(event_type, sender),
+            (sender, Some(module), None) => select_emit_module(module, sender),
             (_, Some(_), Some(_)) => {
-                return Err(Error::Internal(
+                return Err(Error::Client(
                     "Filtering by both emitting module and event type is not supported".to_string(),
                 ))
             }
         };
 
-        query = query
-            .filter("(SELECT lo FROM tx_lo) <= tx_sequence_number")
-            .filter("tx_sequence_number <= (SELECT hi FROM tx_hi)")
-            .filter(
-                "(ROW(tx_sequence_number, event_sequence_number) >= \
-             ((SELECT lo FROM tx_lo), (SELECT lo FROM ev_lo)))",
-            )
-            .filter(
-                "(ROW(tx_sequence_number, event_sequence_number) <= \
-             ((SELECT hi FROM tx_hi), (SELECT hi FROM ev_hi)))",
-            );
-
-        // This is needed to make sure that if a transaction digest is specified, the corresponding
-        // `tx_eq` must yield a non-empty result. Otherwise, the CTE setup will fallback to defaults
-        // and we will return an unexpected response.
-        if filter.transaction_digest.is_some() {
-            query = filter!(query, "EXISTS (SELECT 1 FROM tx_eq)");
-        }
-
         use checkpoints::dsl;
-
-        // hmmm... depending on how we need to handle checkpoint_viewed_at, we may need to make a fetch for its corresponding tx
-        // in which case we might as well tack on some other things to fetch
         let (prev, next, results) = db
             .execute(move |conn| {
-                // todo handle `checkpoint_viewed_at`
-
                 let tx_hi: i64 = conn.first(move || {
                     dsl::checkpoints.select(dsl::network_total_transactions)
                         .filter(dsl::sequence_number.eq(checkpoint_viewed_at as i64))
                 })?;
 
-                query = add_ctes(query, &filter, &page, (tx_hi - 1) as u64);
+                query = add_bounds(query, &filter, &page, (tx_hi - 1) as u64);
 
                 let (prev, next, results) =
                     page.paginate_raw_query::<EvLookup>(conn, checkpoint_viewed_at, query)?;
@@ -441,80 +286,4 @@ impl Event {
             checkpoint_viewed_at,
         })
     }
-}
-
-fn add_ctes(
-    mut query: RawQuery,
-    filter: &EventFilter,
-    page: &Page<Cursor>,
-    tx_hi: u64,
-) -> RawQuery {
-    let mut ctes = vec![];
-
-    if let Some(digest) = filter.transaction_digest {
-        ctes.push(format!(
-            r#"
-            tx_eq AS (
-                SELECT tx_sequence_number AS eq
-                FROM tx_digests
-                WHERE tx_digest = {}
-            )
-        "#,
-            bytea_literal(digest.as_slice())
-        ));
-    }
-
-    let (after_tx, after_ev) = page.after().map(|x| (x.tx, x.e)).unwrap_or((0, 0));
-
-    let select_lo = if !ctes.is_empty() {
-        format!("SELECT GREATEST({}, (SELECT eq FROM tx_eq))", after_tx)
-    } else {
-        format!("SELECT {}", after_tx)
-    };
-
-    ctes.push(format!(
-        r#"
-        tx_lo AS ({} AS lo),
-        ev_lo AS (
-            SELECT CASE
-                WHEN (SELECT lo FROM tx_lo) > {} THEN {} ELSE {}
-            END AS lo
-        )
-    "#,
-        select_lo, after_tx, 0, after_ev
-    ));
-
-    // todo: if before_tx is None then we should have another cte to lookup the
-    // network_total_transactions for the checkpoint_viewed_at, and use that
-    let (before_tx, before_ev) = page
-        .before()
-        .map(|x| (x.tx, x.e))
-        .unwrap_or((tx_hi, u64::MAX));
-
-    let select_hi = if ctes.len() == 2 {
-        format!("SELECT LEAST({}, (SELECT eq FROM tx_eq))", before_tx)
-    } else {
-        format!("SELECT {}", before_tx)
-    };
-
-    ctes.push(format!(
-        r#"
-        tx_hi AS ({} AS hi),
-        ev_hi AS (
-            SELECT CASE
-                WHEN (SELECT hi FROM tx_hi) < {} THEN {} ELSE {}
-            END AS hi
-        )
-    "#,
-        select_hi,
-        before_tx,
-        u64::MAX,
-        before_ev
-    ));
-
-    for cte in ctes {
-        query = query.with(cte);
-    }
-
-    query
 }
