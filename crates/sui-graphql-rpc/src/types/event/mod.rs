@@ -139,6 +139,8 @@ impl Event {
 
                 query = add_bounds(query, &filter, &page, (tx_hi - 1) as u64);
 
+                // handle None, None, None early
+
                 let (prev, next, results) =
                     page.paginate_raw_query::<EvLookup>(conn, checkpoint_viewed_at, query)?;
 
