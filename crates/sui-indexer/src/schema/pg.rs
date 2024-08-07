@@ -30,14 +30,6 @@ diesel::table! {
 }
 
 diesel::table! {
-    pruner_cp_watermark (checkpoint_sequence_number) {
-        checkpoint_sequence_number -> Int8,
-        min_tx_sequence_number -> Int8,
-        max_tx_sequence_number -> Int8,
-    }
-}
-
-diesel::table! {
     display (object_type) {
         object_type -> Text,
         id -> Bytea,
@@ -221,6 +213,14 @@ diesel::table! {
 }
 
 diesel::table! {
+    pruner_cp_watermark (checkpoint_sequence_number) {
+        checkpoint_sequence_number -> Int8,
+        min_tx_sequence_number -> Int8,
+        max_tx_sequence_number -> Int8,
+    }
+}
+
+diesel::table! {
     transactions (tx_sequence_number, checkpoint_sequence_number) {
         tx_sequence_number -> Int8,
         transaction_digest -> Bytea,
@@ -308,7 +308,6 @@ macro_rules! for_all_tables {
         $action!(
             chain_identifier,
             checkpoints,
-            pruner_cp_watermark,
             display,
             epochs,
             events,
@@ -316,6 +315,7 @@ macro_rules! for_all_tables {
             objects_history,
             objects_snapshot,
             protocol_configs,
+            pruner_cp_watermark,
             transactions,
             tx_calls,
             tx_changed_objects,
