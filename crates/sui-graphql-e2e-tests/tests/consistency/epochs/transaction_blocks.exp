@@ -141,7 +141,7 @@ task 21, line 91:
 Epoch advanced: 3
 
 task 22, lines 93-157:
-//# run-graphql --cursors {"t":3,"tc":3,"c":4} {"t":7,"tc":7,"c":8} {"t":11,"tc":11,"c":12}
+//# run-graphql --cursors {"t":3,"i":false,"c":4} {"t":7,"i":false,"c":8} {"t":11,"i":false,"c":12}
 Response: {
   "data": {
     "checkpoint": {
@@ -382,7 +382,7 @@ Response: {
 }
 
 task 23, lines 159-199:
-//# run-graphql --cursors {"t":0,"tc":0,"c":7} {"t":4,"tc":4,"c":11} {"t":8,"tc":8,"c":12}
+//# run-graphql --cursors {"t":0,"i":false,"c":7} {"t":4,"i":false,"c":11} {"t":8,"i":false,"c":12}
 Response: {
   "data": {
     "checkpoint": {
@@ -467,7 +467,7 @@ Response: {
 }
 
 task 24, lines 201-241:
-//# run-graphql --cursors {"t":1,"tc":1,"c":2} {"t":5,"tc":5,"c":6} {"t":9,"tc":9,"c":10}
+//# run-graphql --cursors {"t":1,"i":false,"c":2} {"t":5,"i":false,"c":6} {"t":9,"i":false,"c":10}
 Response: {
   "data": {
     "checkpoint": {
@@ -516,7 +516,7 @@ Response: {
 }
 
 task 25, lines 243-282:
-//# run-graphql --cursors {"t":5,"tc":5,"c":6}
+//# run-graphql --cursors {"t":5,"i":false,"c":6}
 Response: {
   "data": {
     "checkpoint": {

@@ -3,71 +3,86 @@ processed 22 tasks
 init:
 A: object(0,0), B: object(0,1)
 
-task 1 'publish'. lines 6-27:
+task 1, lines 6-27:
+//# publish
 created: object(1,0)
 mutated: object(0,2)
 gas summary: computation_cost: 1000000, storage_cost: 5798800,  storage_rebate: 0, non_refundable_storage_fee: 0
 
-task 2 'create-checkpoint'. lines 29-29:
+task 2, line 29:
+//# create-checkpoint
 Checkpoint created: 1
 
-task 3 'run'. lines 31-31:
+task 3, line 31:
+//# run Test::M1::create --args 0 @A --sender A
 created: object(3,0)
 mutated: object(0,0)
 gas summary: computation_cost: 1000000, storage_cost: 2302800,  storage_rebate: 0, non_refundable_storage_fee: 0
 
-task 4 'run'. lines 33-33:
+task 4, line 33:
+//# run Test::M1::create --args 1 @A --sender A
 created: object(4,0)
 mutated: object(0,0)
 gas summary: computation_cost: 1000000, storage_cost: 2302800,  storage_rebate: 978120, non_refundable_storage_fee: 9880
 
-task 5 'run'. lines 35-35:
+task 5, line 35:
+//# run Test::M1::create --args 2 @A --sender A
 created: object(5,0)
 mutated: object(0,0)
 gas summary: computation_cost: 1000000, storage_cost: 2302800,  storage_rebate: 978120, non_refundable_storage_fee: 9880
 
-task 6 'run'. lines 37-37:
+task 6, line 37:
+//# run Test::M1::create --args 3 @A --sender A
 created: object(6,0)
 mutated: object(0,0)
 gas summary: computation_cost: 1000000, storage_cost: 2302800,  storage_rebate: 978120, non_refundable_storage_fee: 9880
 
-task 7 'run'. lines 39-39:
+task 7, line 39:
+//# run Test::M1::create --args 4 @A --sender A
 created: object(7,0)
 mutated: object(0,0)
 gas summary: computation_cost: 1000000, storage_cost: 2302800,  storage_rebate: 978120, non_refundable_storage_fee: 9880
 
-task 8 'create-checkpoint'. lines 41-41:
+task 8, line 41:
+//# create-checkpoint
 Checkpoint created: 2
 
-task 9 'run'. lines 43-43:
+task 9, line 43:
+//# run Test::M1::create --args 100 @A --sender A
 created: object(9,0)
 mutated: object(0,0)
 gas summary: computation_cost: 1000000, storage_cost: 2302800,  storage_rebate: 978120, non_refundable_storage_fee: 9880
 
-task 10 'run'. lines 45-45:
+task 10, line 45:
+//# run Test::M1::create --args 101 @A --sender A
 created: object(10,0)
 mutated: object(0,0)
 gas summary: computation_cost: 1000000, storage_cost: 2302800,  storage_rebate: 978120, non_refundable_storage_fee: 9880
 
-task 11 'run'. lines 47-47:
+task 11, line 47:
+//# run Test::M1::create --args 102 @A --sender A
 created: object(11,0)
 mutated: object(0,0)
 gas summary: computation_cost: 1000000, storage_cost: 2302800,  storage_rebate: 978120, non_refundable_storage_fee: 9880
 
-task 12 'run'. lines 49-49:
+task 12, line 49:
+//# run Test::M1::create --args 103 @A --sender A
 created: object(12,0)
 mutated: object(0,0)
 gas summary: computation_cost: 1000000, storage_cost: 2302800,  storage_rebate: 978120, non_refundable_storage_fee: 9880
 
-task 13 'run'. lines 51-51:
+task 13, line 51:
+//# run Test::M1::create --args 104 @A --sender A
 created: object(13,0)
 mutated: object(0,0)
 gas summary: computation_cost: 1000000, storage_cost: 2302800,  storage_rebate: 978120, non_refundable_storage_fee: 9880
 
-task 14 'create-checkpoint'. lines 53-53:
+task 14, line 53:
+//# create-checkpoint
 Checkpoint created: 3
 
-task 15 'run-graphql'. lines 55-74:
+task 15, lines 55-74:
+//# run-graphql
 Response: {
   "data": {
     "transactionBlocks": {
@@ -163,7 +178,8 @@ Response: {
   }
 }
 
-task 16 'run-graphql'. lines 77-97:
+task 16, lines 77-97:
+//# run-graphql
 Response: {
   "data": {
     "transactionBlocks": {
@@ -187,7 +203,8 @@ Response: {
   }
 }
 
-task 17 'run-graphql'. lines 99-118:
+task 17, lines 99-118:
+//# run-graphql --cursors {"c":4,"t":2,"i":false}
 Response: {
   "data": {
     "transactionBlocks": {
@@ -211,7 +228,8 @@ Response: {
   }
 }
 
-task 18 'run-graphql'. lines 120-139:
+task 18, lines 120-139:
+//# run-graphql --cursors {"c":4,"t":6,"i":false}
 Response: {
   "data": {
     "transactionBlocks": {
@@ -235,7 +253,8 @@ Response: {
   }
 }
 
-task 19 'run-graphql'. lines 141-160:
+task 19, lines 141-160:
+//# run-graphql --cursors {"c":4,"t":10,"i":false}
 Response: {
   "data": {
     "transactionBlocks": {
@@ -259,7 +278,8 @@ Response: {
   }
 }
 
-task 20 'run-graphql'. lines 162-181:
+task 20, lines 162-181:
+//# run-graphql --cursors {"c":4,"t":11,"i":false}
 Response: {
   "data": {
     "transactionBlocks": {
@@ -274,7 +294,8 @@ Response: {
   }
 }
 
-task 21 'run-graphql'. lines 183-202:
+task 21, lines 183-202:
+//# run-graphql --cursors {"c":4,"t":12,"i":false}
 Response: {
   "data": {
     "transactionBlocks": {
