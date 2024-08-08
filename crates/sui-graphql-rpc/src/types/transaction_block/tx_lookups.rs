@@ -11,6 +11,7 @@ use crate::{
         sui_address::SuiAddress,
         transaction_block::TransactionBlockKindInput,
         type_filter::{FqNameFilter, ModuleFilter},
+        uint53::UInt53,
     },
 };
 use diesel::{
@@ -244,7 +245,7 @@ impl TransactionBlockFilter {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        matches!(self.before_checkpoint, Some(0))
+        self.before_checkpoint == Some(UInt53::from(0))
             || matches!(
                 (self.after_checkpoint, self.before_checkpoint),
                 (Some(after), Some(before)) if after >= before

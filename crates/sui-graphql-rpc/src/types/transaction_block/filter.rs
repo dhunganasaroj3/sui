@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::types::intersect;
+use crate::types::{intersect, uint53::UInt53};
 use async_graphql::InputObject;
 
 use crate::types::{digest::Digest, sui_address::SuiAddress, type_filter::FqNameFilter};
@@ -16,9 +16,9 @@ pub(crate) struct TransactionBlockFilter {
 
     /// An input filter selecting for either system or programmable transactions.
     pub kind: Option<TransactionBlockKindInput>,
-    pub after_checkpoint: Option<u64>,
-    pub at_checkpoint: Option<u64>,
-    pub before_checkpoint: Option<u64>,
+    pub after_checkpoint: Option<UInt53>,
+    pub at_checkpoint: Option<UInt53>,
+    pub before_checkpoint: Option<UInt53>,
 
     pub sign_address: Option<SuiAddress>,
     pub recv_address: Option<SuiAddress>,

@@ -275,7 +275,7 @@ impl TransactionBlock {
             return Ok(ScanConnection::new(false, false));
         }
 
-        let limits = ctx.data_unchecked::<ServiceConfig>().limits;
+        let limits = &ctx.data_unchecked::<ServiceConfig>().limits;
 
         // If there is more than one `complex_filter` specified, then the caller has provided some
         // arbitrary combination of `function`, `kind`, `recvAddress`, `inputObject`, or
@@ -320,9 +320,9 @@ impl TransactionBlock {
             .execute_repeatable(move |conn| {
                 let Some(tx_bounds) = TxBounds::query(
                     conn,
-                    filter.after_checkpoint,
-                    filter.at_checkpoint,
-                    filter.before_checkpoint,
+                    filter.after_checkpoint.map(|c| u64::from(c)),
+                    filter.at_checkpoint.map(|c| u64::from(c)),
+                    filter.before_checkpoint.map(|c| u64::from(c)),
                     checkpoint_viewed_at,
                     scan_limit,
                     &page,
